@@ -2,61 +2,71 @@ package src
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/AllenDang/cimgui-go/imgui"
+	"github.com/bvisness/buongiorno/src/utils"
 )
 
 var (
-	showDemoWindow bool
-	value3         int32
-	values         [2]int32
-	content        string = "Let me try"
-	color4         [4]float32
-	selected       bool
+	services []AvahiService
 )
 
+func init() {
+	go func() {
+		t := utils.NewInstaTicker(time.Second * 1)
+		for range t.C {
+			svcs := getAvahiServices()
+			services = <-svcs
+		}
+	}()
+}
+
 func UI() {
-	if showDemoWindow {
-		imgui.ShowDemoWindowV(&showDemoWindow)
-	}
+	imgui.ShowDemoWindow()
 
 	imgui.SetNextWindowSizeV(imgui.NewVec2(300, 300), imgui.CondOnce)
-	imgui.SetNextWindowSizeConstraintsV(imgui.NewVec2(300, 300), imgui.NewVec2(500, 500), func(data *imgui.SizeCallbackData) {
-	}, 0)
 
-	imgui.Begin("Window 1")
-	if imgui.ButtonV("Click Me", imgui.NewVec2(80, 20)) {
-		fmt.Println("Button clicked")
+	imgui.Begin("Services")
+	{
+		// imgui.BeginTable("services", 8)
+		imgui.BeginTableV("services", 8, imgui.TableFlagsSizingFixedFit|imgui.TableFlagsResizable|imgui.TableFlagsBorders|imgui.TableFlagsRowBg, imgui.NewVec2(0, 0), 0)
+
+		imgui.TableSetupColumn("Interface")
+		imgui.TableSetupColumn("Protocol")
+		imgui.TableSetupColumn("Name")
+		imgui.TableSetupColumn("Service Type")
+		imgui.TableSetupColumn("Domain")
+		imgui.TableSetupColumn("Hostname")
+		imgui.TableSetupColumn("Address")
+		imgui.TableSetupColumn("Port")
+		imgui.TableHeadersRow()
+
+		for _, service := range services {
+			imgui.TableNextRow()
+			imgui.TableNextColumn()
+			imgui.Text(service.Interface)
+			imgui.TableNextColumn()
+			imgui.Text(service.Protocol)
+			imgui.TableNextColumn()
+			imgui.Text(service.Name)
+			imgui.TableNextColumn()
+			imgui.Text(service.ServiceType)
+			imgui.TableNextColumn()
+			imgui.Text(service.Domain)
+			imgui.TableNextColumn()
+			imgui.Text(service.Hostname)
+			imgui.TableNextColumn()
+			imgui.Text(service.Address)
+			imgui.TableNextColumn()
+			imgui.Text(service.Port)
+		}
+		imgui.EndTable()
 	}
-	imgui.TextUnformatted("Unformatted text")
-	imgui.Checkbox("Show demo window", &showDemoWindow)
-	if imgui.BeginCombo("Combo", "Combo preview") {
-		imgui.SelectableBoolPtr("Item 1", &selected)
-		imgui.SelectableBool("Item 2")
-		imgui.SelectableBool("Item 3")
-		imgui.EndCombo()
-	}
-
-	if imgui.RadioButtonBool("Radio button1", selected) {
-		selected = true
-	}
-
-	imgui.SameLine()
-
-	if imgui.RadioButtonBool("Radio button2", !selected) {
-		selected = false
-	}
-
-	imgui.InputTextWithHint("Name", "write your name here", &content, 0, InputTextCallback)
-	imgui.Text(content)
-	imgui.SliderInt("Slider int", &value3, 0, 100)
-	imgui.DragInt("Drag int", &values[0])
-	imgui.DragInt2("Drag int2", &values)
-	imgui.ColorEdit4("Color Edit3", &color4)
 	imgui.End()
 }
 
 func InputTextCallback(data imgui.InputTextCallbackData) int {
-	fmt.Println("got call back")
+	fmt.Println("got callback")
 	return 0
 }
