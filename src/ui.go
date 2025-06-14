@@ -43,8 +43,9 @@ type ServiceInstance struct {
 }
 
 type Host struct {
-	Name string
-	Addr string
+	Name     string
+	IPv4Addr string
+	IPv6Addr string
 }
 
 var (
@@ -167,37 +168,37 @@ func init() {
 				case *dns.A:
 					log.Printf("Got A: %#v", rr)
 					host := utils.AppendToSliceIfAbsent(&hosts, Host{Name: rr.Hdr.Name}, func(h Host) string { return h.Name })
-					host.Addr = rr.A.String()
+					host.IPv4Addr = rr.A.String()
 				case *dns.AAAA:
 					log.Printf("Got AAAA: %#v", rr)
 					host := utils.AppendToSliceIfAbsent(&hosts, Host{Name: rr.Hdr.Name}, func(h Host) string { return h.Name })
-					host.Addr = rr.AAAA.String()
+					host.IPv6Addr = rr.AAAA.String()
 				}
 			}
-		}
 
-		// Process the queue of SRVs and TXTs. Because we process items in order,
-		// even a stack of old records should resolve quickly to the latest
-		// information.
-		for i := 0; i < len(deferredRRs); i++ {
-			rr := deferredRRs[i]
-			if instance, ok := utils.FindInSlice(serviceInstances, func(i ServiceInstance) bool {
-				return i.RawName == rr.Header().Name
-			}); ok {
-				// We have an instance we can update.
-				switch rr := rr.(type) {
-				case *dns.SRV:
-					instance.Host = rr.Target
-					instance.Port = int(rr.Port)
-				case *dns.TXT:
-					instance.Extras = rr.Txt
+			// Process the queue of SRVs and TXTs. Because we process items in order,
+			// even a stack of old records should resolve quickly to the latest
+			// information.
+			for i := 0; i < len(deferredRRs); i++ {
+				rr := deferredRRs[i]
+				if instance, ok := utils.FindInSlice(serviceInstances, func(i ServiceInstance) bool {
+					return i.RawName == rr.Header().Name
+				}); ok {
+					// We have an instance we can update.
+					switch rr := rr.(type) {
+					case *dns.SRV:
+						instance.Host = rr.Target
+						instance.Port = int(rr.Port)
+					case *dns.TXT:
+						instance.Extras = rr.Txt
+					}
+
+					// Since we processed this record, remove it from the queue.
+					deferredRRs = slices.Delete(deferredRRs, i, i+1)
+					i -= 1
+				} else {
+					// Still no information for this record.
 				}
-
-				// Since we processed this record, remove it from the queue.
-				deferredRRs = slices.Delete(deferredRRs, i, i+1)
-				i -= 1
-			} else {
-				// Still no information for this record.
 			}
 		}
 	}()
@@ -311,10 +312,16 @@ func UI() {
 		for _, host := range hosts {
 			if imgui.TreeNodeExStr(host.Name) {
 				imgui.Text(fmt.Sprintf("Name: %s", host.Name))
-				imgui.Text(fmt.Sprintf("Addr: %s", host.Addr))
+				imgui.Text(fmt.Sprintf("IPv4 Addr: %s", host.IPv4Addr))
+				imgui.Text(fmt.Sprintf("IPv6 Addr: %s", host.IPv6Addr))
 
 				imgui.TreePop()
 			}
+		}
+
+		imgui.Text(fmt.Sprintf("%d queued RRs:", len(deferredRRs)))
+		for _, rr := range deferredRRs {
+			imgui.BulletText(fmt.Sprintf("%s %s", dns.Type(rr.Header().Rrtype), rr.Header().Name))
 		}
 	}
 	imgui.End()
