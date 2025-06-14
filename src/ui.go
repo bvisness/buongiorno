@@ -28,8 +28,9 @@ var (
 	})
 
 	//go:embed macbook-line.png
-	macbookRaw []byte
-	macbook    *backend.Texture
+	macbookRaw  []byte
+	macbook     *backend.Texture
+	macbookSize = imgui.NewVec2(22, 18)
 
 	lastFrame time.Time
 )
@@ -288,6 +289,16 @@ func serviceQueriesForHost(host Host) []ServiceQuery {
 	return res
 }
 
+func serviceInstancesForHost(host Host) []ServiceInstance {
+	var res []ServiceInstance
+	for _, instance := range serviceInstances {
+		if instance.Host == host.Name {
+			res = append(res, instance)
+		}
+	}
+	return res
+}
+
 func AfterCreateContext() {
 	macbook = loadTexture(macbookRaw)
 	lastFrame = time.Now()
@@ -369,7 +380,7 @@ func UI() {
 			}
 		}
 
-		imgui.Image(macbook.ID, imgui.NewVec2(22, 18))
+		imgui.Image(macbook.ID, macbookSize)
 	}
 	imgui.End()
 
@@ -427,11 +438,12 @@ func UI() {
 	imgui.End()
 
 	if imgui.Begin("Graph Controls") {
-		imgui.DragFloat("Spring Length", &springLength)
-		imgui.DragFloat("Spring Strength", &springStrength)
+		imgui.SliderFloatV("Spring Length", &springLength, 0, 500, "%.3f", 0)
+		imgui.SliderFloatV("Spring Strength", &springStrength, 0, 1, "%.3f", 0)
 		imgui.DragFloat("Repel Strength", &repelStrength)
 		imgui.SliderFloatV("Gravity Strength", &gravityStrength, 0, 1, "%.3f", 0)
 		imgui.SliderFloatV("Damping", &damping, 0, 0.1, "%.3f", 0)
+		imgui.DragFloat2("Render Offset", &renderOffset)
 	}
 	imgui.End()
 
@@ -446,18 +458,26 @@ func UI() {
 		lastFrame = now
 
 		windowPos := imgui.CursorScreenPos()
-		windowCenter := windowPos.Add(imgui.NewVec2(imgui.WindowWidth()/2, imgui.WindowHeight()/2))
+		windowCenter := windowPos.
+			Add(imgui.NewVec2(imgui.WindowWidth()/2, imgui.WindowHeight()/2)).
+			Add(imgui.NewVec2(renderOffset[0], renderOffset[1]))
 
 		// Render graph lines
-		// dl := imgui.WindowDrawList()
-		// dl.AddLine(imgui.NewVec2(50, 50).Add(windowPos), imgui.NewVec2(150, 100).Add(windowPos), imgui.ColorU32Vec4(imgui.NewVec4(1, 1, 1, 1)))
+		dl := imgui.WindowDrawList()
+		for _, edge := range edges {
+			dl.AddLine(
+				windowCenter.Add(edge.A.Pos).Add(macbookSize.Mul(0.5)),
+				windowCenter.Add(edge.B.Pos).Add(macbookSize.Mul(0.5)),
+				imgui.ColorU32Vec4(imgui.NewVec4(1, 1, 1, 1)),
+			)
+		}
 
 		// Render graph nodes
 		for _, host := range hosts {
 			imgui.SetCursorScreenPos(windowCenter.Add(host.Pos))
 			imgui.BeginChildStr(host.Name)
 			{
-				imgui.Image(macbook.ID, imgui.NewVec2(22, 18))
+				imgui.Image(macbook.ID, macbookSize)
 				imgui.Text(host.Name)
 				if host.IPv4Addr != "" {
 					imgui.Text(host.IPv4Addr)
@@ -486,16 +506,58 @@ func loadTexture(imgData []byte) *backend.Texture {
 }
 
 var (
-	springLength    float32 = 100
-	springStrength  float32 = 0.01
+	springLength    float32 = 165
+	springStrength  float32 = 0.5
 	repelStrength   float32 = 25000
 	gravityStrength float32 = 0.01 // gravity is like a spring to the center
 	damping         float32 = 0.02
 	maxVelocity     float32 = 25
 	newNodeJitter   float32 = 20
+
+	edges        []GraphEdge
+	renderOffset = [2]float32{-40, -45}
 )
 
+type GraphEdge struct {
+	A, B *Host
+}
+
+func hostsConnected(a, b *Host) bool {
+	for _, edge := range edges {
+		if (edge.A == a && edge.B == b) || (edge.A == b && edge.B == a) {
+			return true
+		}
+	}
+	return false
+}
+
 func updateGraph(dt float32) {
+	// Calculate edges
+	edges = nil
+	for i := range hosts {
+		for j := range hosts {
+			a, b := &hosts[i], &hosts[j]
+
+			connected := false
+			aQueries := serviceQueriesForHost(*a)
+			bServices := serviceInstancesForHost(*b)
+		checkConnection:
+			for _, query := range aQueries {
+				for _, instance := range bServices {
+					if instance.ServiceType == query.ServiceType {
+						connected = true
+						break checkConnection
+					}
+				}
+			}
+
+			alreadyConnected := hostsConnected(a, b)
+			if connected && !alreadyConnected {
+				edges = append(edges, GraphEdge{A: a, B: b})
+			}
+		}
+	}
+
 	for i := range hosts {
 		host := &hosts[i]
 
@@ -512,19 +574,32 @@ func updateGraph(dt float32) {
 		host.Vel.Y += gravityStrength * toOrigin.Y
 	}
 
-	// Repulsion
+	// Repulsion & attraction
 	for i := range hosts {
 		for j := range hosts {
 			a, b := &hosts[i], &hosts[j]
 			dx := a.Pos.X - b.Pos.X
 			dy := a.Pos.Y - b.Pos.Y
 			dist2 := dx*dx + dy*dy
-			force := repelStrength / (dist2 + 0.01) // force falls off with the square of the distance
 			d := float32(math.Sqrt(float64(dist2)))
-			fx := force * (dx / (d + 0.01))
-			fy := force * (dy / (d + 0.01))
-			a.Vel.X += fx
-			a.Vel.Y += fy
+
+			// Repulsion
+			{
+				force := repelStrength / (dist2 + 0.01) // force falls off with the square of the distance
+				fx := force * (dx / (d + 0.01))
+				fy := force * (dy / (d + 0.01))
+				a.Vel.X += fx
+				a.Vel.Y += fy
+			}
+
+			// Attraction
+			if hostsConnected(a, b) {
+				force := springStrength * (springLength - d)
+				fx := force * (dx / (d + 0.01))
+				fy := force * (dy / (d + 0.01))
+				a.Vel.X += fx
+				a.Vel.Y += fy
+			}
 		}
 	}
 
