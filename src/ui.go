@@ -7,6 +7,9 @@ import (
 	"image"
 	_ "image/png"
 	"log"
+	"math"
+	"math/rand"
+	"net"
 	"slices"
 	"strings"
 	"time"
@@ -27,6 +30,8 @@ var (
 	//go:embed macbook-line.png
 	macbookRaw []byte
 	macbook    *backend.Texture
+
+	lastFrame time.Time
 )
 
 type ServiceInstance struct {
@@ -46,6 +51,9 @@ type Host struct {
 	Name     string
 	IPv4Addr string
 	IPv6Addr string
+
+	// Node graph stuff
+	Pos, Vel imgui.Vec2
 }
 
 type ServiceQuery struct {
@@ -66,6 +74,38 @@ var (
 )
 
 func init() {
+	// hosts = append(hosts,
+	// 	Host{Name: "a"},
+	// 	Host{Name: "b"},
+	// 	Host{Name: "c"},
+	// )
+
+	me := Host{Name: "This PC"}
+	if en0, err := net.InterfaceByName("en0"); err != nil {
+		if addrs, err := en0.Addrs(); err != nil {
+			for _, addr := range addrs {
+				var ip net.IP
+				switch addr := addr.(type) {
+				case *net.IPNet:
+					ip = addr.IP
+				case *net.IPAddr:
+					ip = addr.IP
+				}
+
+				if ip.To4() == nil {
+					me.IPv6Addr = ip.String()
+				} else {
+					me.IPv4Addr = ip.String()
+				}
+			}
+		} else {
+			log.Print("No addrs found for interface en0")
+		}
+	} else {
+		log.Print("No interface found named en0")
+	}
+	hosts = append(hosts, me)
+
 	go func() {
 		t := utils.NewInstaTicker(time.Second * 1)
 		for range t.C {
@@ -250,6 +290,7 @@ func serviceQueriesForHost(host Host) []ServiceQuery {
 
 func AfterCreateContext() {
 	macbook = loadTexture(macbookRaw)
+	lastFrame = time.Now()
 }
 
 func UI() {
@@ -358,6 +399,7 @@ func UI() {
 				imgui.Text(fmt.Sprintf("Name: %s", host.Name))
 				imgui.Text(fmt.Sprintf("IPv4 Addr: %s", host.IPv4Addr))
 				imgui.Text(fmt.Sprintf("IPv6 Addr: %s", host.IPv6Addr))
+				imgui.Text(fmt.Sprintf("Position: [%f, %f]", host.Pos.X, host.Pos.Y))
 
 				queries := serviceQueriesForHost(host)
 				if len(queries) > 0 {
@@ -383,6 +425,51 @@ func UI() {
 		}
 	}
 	imgui.End()
+
+	if imgui.Begin("Graph Controls") {
+		imgui.DragFloat("Spring Length", &springLength)
+		imgui.DragFloat("Spring Strength", &springStrength)
+		imgui.DragFloat("Repel Strength", &repelStrength)
+		imgui.SliderFloatV("Gravity Strength", &gravityStrength, 0, 1, "%.3f", 0)
+		imgui.SliderFloatV("Damping", &damping, 0, 0.1, "%.3f", 0)
+	}
+	imgui.End()
+
+	if imgui.Begin("Devices") {
+		// Update graph
+		now := time.Now()
+		dt := now.Sub(lastFrame)
+		if dt > 100*time.Millisecond {
+			dt = 100 * time.Millisecond
+		}
+		updateGraph(float32(dt.Seconds()))
+		lastFrame = now
+
+		windowPos := imgui.CursorScreenPos()
+		windowCenter := windowPos.Add(imgui.NewVec2(imgui.WindowWidth()/2, imgui.WindowHeight()/2))
+
+		// Render graph lines
+		// dl := imgui.WindowDrawList()
+		// dl.AddLine(imgui.NewVec2(50, 50).Add(windowPos), imgui.NewVec2(150, 100).Add(windowPos), imgui.ColorU32Vec4(imgui.NewVec4(1, 1, 1, 1)))
+
+		// Render graph nodes
+		for _, host := range hosts {
+			imgui.SetCursorScreenPos(windowCenter.Add(host.Pos))
+			imgui.BeginChildStr(host.Name)
+			{
+				imgui.Image(macbook.ID, imgui.NewVec2(22, 18))
+				imgui.Text(host.Name)
+				if host.IPv4Addr != "" {
+					imgui.Text(host.IPv4Addr)
+				}
+				if host.IPv6Addr != "" {
+					imgui.Text(host.IPv6Addr)
+				}
+			}
+			imgui.EndChild()
+		}
+	}
+	imgui.End()
 }
 
 func InputTextCallback(data imgui.InputTextCallbackData) int {
@@ -396,4 +483,60 @@ func loadTexture(imgData []byte) *backend.Texture {
 		panic(err)
 	}
 	return backend.NewTextureFromRgba(backend.ImageToRgba(img))
+}
+
+var (
+	springLength    float32 = 100
+	springStrength  float32 = 0.01
+	repelStrength   float32 = 25000
+	gravityStrength float32 = 0.01 // gravity is like a spring to the center
+	damping         float32 = 0.02
+	maxVelocity     float32 = 25
+	newNodeJitter   float32 = 20
+)
+
+func updateGraph(dt float32) {
+	for i := range hosts {
+		host := &hosts[i]
+
+		// Jitter to ensure force directed stuff has something to work with
+		if host.Pos.X == 0 && host.Pos.Y == 0 {
+			host.Pos = imgui.NewVec2(
+				newNodeJitter*2*rand.Float32()-newNodeJitter, newNodeJitter*2*rand.Float32()-newNodeJitter,
+			)
+		}
+
+		// Gravity
+		toOrigin := host.Pos.Mul(-1)
+		host.Vel.X += gravityStrength * toOrigin.X
+		host.Vel.Y += gravityStrength * toOrigin.Y
+	}
+
+	// Repulsion
+	for i := range hosts {
+		for j := range hosts {
+			a, b := &hosts[i], &hosts[j]
+			dx := a.Pos.X - b.Pos.X
+			dy := a.Pos.Y - b.Pos.Y
+			dist2 := dx*dx + dy*dy
+			force := repelStrength / (dist2 + 0.01) // force falls off with the square of the distance
+			d := float32(math.Sqrt(float64(dist2)))
+			fx := force * (dx / (d + 0.01))
+			fy := force * (dy / (d + 0.01))
+			a.Vel.X += fx
+			a.Vel.Y += fy
+		}
+	}
+
+	// Integrate
+	for i := range hosts {
+		host := &hosts[i]
+
+		// Update velocity (damping + clamping)
+		host.Vel = host.Vel.Mul(1 - damping)
+		host.Vel.X = utils.Clamp(host.Vel.X, -maxVelocity, maxVelocity)
+
+		host.Pos.X += host.Vel.X * dt
+		host.Pos.Y += host.Vel.Y * dt
+	}
 }

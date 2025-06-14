@@ -1,5 +1,7 @@
 package utils
 
+import "golang.org/x/exp/constraints"
+
 // We have this because otherwise passing a nil *SomeError through Must or
 // Must1 will result in a non-nil interface value and a spurious panic.
 type comparableError interface {
@@ -44,4 +46,14 @@ func Must2[T1 any, T2 any, E comparableError](v1 T1, v2 T2, err E) (T1, T2) {
 		panic(err)
 	}
 	return v1, v2
+}
+
+func Clamp[T constraints.Ordered](v, min, max T) T {
+	if v < min {
+		return min
+	}
+	if max < v {
+		return max
+	}
+	return v
 }
