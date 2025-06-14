@@ -2,6 +2,7 @@ package packet
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -24,13 +25,14 @@ type MDNSPacket struct {
 }
 
 func CaptureMDNS() (<-chan MDNSPacket, error) {
-	var out chan MDNSPacket
+	out := make(chan MDNSPacket, 1000)
 	handle, err := pcap.OpenLive("any", 1600, true, pcap.BlockForever)
 	if err != nil {
 		return nil, err
 	}
 
-	err = handle.SetBPFFilter("udp port 5353 and (dst host 224.0.0.251 or dst host ff02::fb)")
+	// for only multicast: udp port 5353 and (dst host 224.0.0.251 or dst host ff02::fb)
+	err = handle.SetBPFFilter("udp port 5353")
 	if err != nil {
 		return nil, err
 	}
@@ -72,4 +74,45 @@ func CaptureMDNS() (<-chan MDNSPacket, error) {
 	}()
 
 	return out, nil
+}
+
+func SplitHost(host string) []string {
+	return strings.Split(strings.TrimRight(host, "."), ".")
+}
+
+func HostMatches(a, b string) bool {
+	aParts := SplitHost(a)
+	bParts := SplitHost(b)
+
+	// Early out to catch things like a.b.c.d ~= **.a.b.c.d
+	if len(aParts) < len(bParts) {
+		return false
+	}
+
+	if strings.HasPrefix(b, "**") {
+		numWildcards := len(aParts) - (len(bParts) - 1)
+		rest := bParts[1:]
+		bParts = []string{}
+		for i := 0; i < numWildcards; i++ {
+			bParts = append(bParts, "*")
+		}
+		bParts = append(bParts, rest...)
+	}
+	if strings.HasSuffix(b, "**") {
+		numWildcards := len(aParts) - (len(bParts) - 1)
+		bParts = bParts[:len(bParts)-1]
+		for i := 0; i < numWildcards; i++ {
+			bParts = append(bParts, "*")
+		}
+	}
+
+	if len(aParts) != len(bParts) {
+		return false
+	}
+	for i := range aParts {
+		if aParts[i] != bParts[i] && bParts[i] != "*" {
+			return false
+		}
+	}
+	return true
 }

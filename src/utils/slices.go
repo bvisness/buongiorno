@@ -33,3 +33,34 @@ nextitem:
 	}
 	return res
 }
+
+func AppendToSliceIfAbsent[T any, K comparable](items *[]T, newItem T, f func(T) K) *T {
+	key := f(newItem)
+	for i := range *items {
+		if key == f((*items)[i]) {
+			return &(*items)[i]
+		}
+	}
+	*items = append(*items, newItem)
+	return &(*items)[len(*items)-1]
+}
+
+func UpsertIntoSlice[T any, K comparable](items *[]T, newItem T, f func(T) K) {
+	key := f(newItem)
+	for i := range *items {
+		if key == f((*items)[i]) {
+			(*items)[i] = newItem
+			return
+		}
+	}
+	*items = append(*items, newItem)
+}
+
+func FindInSlice[T any](items []T, f func(T) bool) (*T, bool) {
+	for i := range items {
+		if f(items[i]) {
+			return &items[i], true
+		}
+	}
+	return nil, false
+}

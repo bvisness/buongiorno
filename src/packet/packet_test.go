@@ -27,3 +27,34 @@ func TestParsePacket(t *testing.T) {
 		}
 	}
 }
+
+func TestHostMatches(t *testing.T) {
+	assert.True(t, HostMatches("a", "a"))
+	assert.True(t, HostMatches("a.b.c.d", "a.b.c.d"))
+	assert.True(t, HostMatches("a.b.c.d.", "a.b.c.d."))
+	assert.True(t, HostMatches("a.b.c.d.", "a.b.c.d"))
+	assert.True(t, HostMatches("a.b.c.d", "a.b.c.d."))
+	assert.False(t, HostMatches("a.b.c.d", "x.y.z.w"))
+	assert.False(t, HostMatches("a.b.c.d", "a.b.c.x"))
+	assert.False(t, HostMatches("a.b.c.d", "a.b.c"))
+	assert.False(t, HostMatches("a.b.c", "a.b.c.d"))
+
+	assert.True(t, HostMatches("a.b.c.d", "a.b.c.*"))
+	assert.True(t, HostMatches("a.b.c.d", "a.b.*.*"))
+	assert.True(t, HostMatches("a.b.c.d", "a.*.*.*"))
+	assert.True(t, HostMatches("a.b.c.d", "*.*.*.*"))
+	assert.False(t, HostMatches("a.b.c.d", "*"))
+
+	assert.True(t, HostMatches("a.b.c.d", "**"))
+	assert.True(t, HostMatches("a.b.c.d", "**.d"))
+	assert.True(t, HostMatches("a.b.c.d", "**.c.d"))
+	assert.True(t, HostMatches("a.b.c.d", "**.b.c.d"))
+	assert.False(t, HostMatches("a.b.c.d", "**.a.b.c.d"))
+
+	assert.True(t, HostMatches("a.b.c.d", "a.**"))
+	assert.True(t, HostMatches("a.b.c.d", "a.b.**"))
+	assert.True(t, HostMatches("a.b.c.d", "a.b.c.**"))
+	assert.False(t, HostMatches("a.b.c.d", "a.b.c.d.**"))
+
+	assert.True(t, HostMatches("_services._dns-sd._udp.local", "_services._dns-sd._udp.*"))
+}
