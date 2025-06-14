@@ -79,3 +79,44 @@ func getAvahiServices() <-chan []AvahiService {
 
 	return res
 }
+
+type AvahiServiceType struct {
+	DNSSDName string
+	NiceName  string
+}
+
+func getAvahiServiceTypes() []AvahiServiceType {
+	var raw, nice []byte
+	{
+		cmd := exec.Command("avahi-browse", "--dump-db")
+		var err error
+		nice, err = cmd.Output()
+		if err != nil {
+			panic(err)
+		}
+	}
+	{
+		cmd := exec.Command("avahi-browse", "--dump-db", "--no-db-lookup")
+		var err error
+		raw, err = cmd.Output()
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	var res []AvahiServiceType
+	rawParts := strings.Split(string(raw), "\n")
+	niceParts := strings.Split(string(nice), "\n")
+	for i := range rawParts {
+		rawPart := rawParts[i]
+		nicePart := niceParts[i]
+		if rawPart == "" {
+			continue
+		}
+		res = append(res, AvahiServiceType{
+			DNSSDName: rawPart,
+			NiceName:  nicePart,
+		})
+	}
+	return res
+}

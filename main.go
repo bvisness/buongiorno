@@ -19,6 +19,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	currentBackend.SetAfterCreateContextHook(src.AfterCreateContext)
 
 	currentBackend.SetBgColor(imgui.NewVec4(0.1, 0.1, 0.1, 1.0))
 	currentBackend.CreateWindow("Buongiorno", 1200, 900)
