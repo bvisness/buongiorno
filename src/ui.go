@@ -48,9 +48,17 @@ type Host struct {
 	IPv6Addr string
 }
 
+type ServiceQuery struct {
+	SourceAddr  string
+	ServiceType string // the raw DNS-SD service type, e.g. _airplay._tcp
+
+	RawQuery string
+}
+
 var (
 	serviceInstances []ServiceInstance
 	hosts            []Host
+	serviceQueries   []ServiceQuery
 
 	// SRV and TXT records are deferred to the end of packet processing to ensure
 	// that we always process their info after any PTRs.
@@ -72,6 +80,25 @@ func init() {
 	}
 	go func() {
 		for p := range packets {
+			// Track queries for PTR records
+			for _, question := range p.DNS.Question {
+				switch question.Qtype {
+				case dns.TypePTR:
+					if !packet.HostMatches(question.Name, "**._tcp.local") && !packet.HostMatches(question.Name, "**._udp.local") {
+						// This PTR question is not looking for DNS-SD services
+						break
+					}
+
+					nameParts := packet.SplitHost(question.Name)
+					serviceQueries = append(serviceQueries, ServiceQuery{
+						SourceAddr:  p.SrcAddr,
+						ServiceType: strings.Join(nameParts[:len(nameParts)-1], "."),
+
+						RawQuery: question.Name,
+					})
+				}
+			}
+
 			// DNS-SD recommends that various records be added to the Additional
 			// section in order to flesh out the services being advertised. This
 			// effectively means that we can just treat whatever we find in the
@@ -87,10 +114,10 @@ func init() {
 			// will be overridden by a subsequent answer anyway. (Unless they were
 			// unicasted back I suppose, but there's only so much I can do, all
 			// right?)
-			rrs := p.DNS.Answer
-			rrs = append(rrs, p.DNS.Extra...)
-			rrs = append(rrs, p.DNS.Ns...)
-			for _, answer := range rrs {
+			answers := p.DNS.Answer
+			answers = append(answers, p.DNS.Extra...)
+			answers = append(answers, p.DNS.Ns...)
+			for _, answer := range answers {
 				// In DNS-SD, a PTR record indicates that a service is being
 				// advertised. If a PTR record is provided than it is expected that
 				// a SRV and TXT record will also be provided (although this is
@@ -204,6 +231,23 @@ func init() {
 	}()
 }
 
+func serviceQueriesForHost(host Host) []ServiceQuery {
+	var res []ServiceQuery
+	seen := make(map[string]struct{})
+	for _, query := range serviceQueries {
+		if query.SourceAddr != host.IPv4Addr && query.SourceAddr != host.IPv6Addr {
+			continue
+		}
+		if _, alreadySeen := seen[query.RawQuery]; alreadySeen {
+			continue
+		}
+
+		res = append(res, query)
+		seen[query.RawQuery] = struct{}{}
+	}
+	return res
+}
+
 func AfterCreateContext() {
 	macbook = loadTexture(macbookRaw)
 }
@@ -314,6 +358,20 @@ func UI() {
 				imgui.Text(fmt.Sprintf("Name: %s", host.Name))
 				imgui.Text(fmt.Sprintf("IPv4 Addr: %s", host.IPv4Addr))
 				imgui.Text(fmt.Sprintf("IPv6 Addr: %s", host.IPv6Addr))
+
+				queries := serviceQueriesForHost(host)
+				if len(queries) > 0 {
+					imgui.Text("Requested services:")
+					imgui.Indent()
+					for _, query := range queries {
+						if niceName, ok := serviceTypes[query.ServiceType]; ok {
+							imgui.Text(fmt.Sprintf("%s (%s)", niceName[0].NiceName, query.ServiceType))
+						} else {
+							imgui.Text(query.ServiceType)
+						}
+					}
+					imgui.Unindent()
+				}
 
 				imgui.TreePop()
 			}
