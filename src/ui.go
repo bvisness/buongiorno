@@ -2,6 +2,7 @@ package src
 
 import (
 	"bytes"
+	"embed"
 	_ "embed"
 	"fmt"
 	"image"
@@ -32,6 +33,22 @@ var (
 	macbook     *backend.Texture
 	macbookSize = imgui.NewVec2(22, 18)
 
+	//go:embed icons
+	iconFS           embed.FS
+	icons            = make(map[string]*backend.Texture)
+	service2iconname = map[string]string{
+		"_airplay._tcp":         "airplay.png",
+		"_companion-link._tcp":  "smartphone.png",
+		"_googlecast._tcp":      "cast.png",
+		"_http._tcp":            "global.png",
+		"_ipp._tcp":             "printer.png",
+		"_pdl-datastream._tcp":  "printer.png",
+		"_printer._tcp":         "printer.png",
+		"_raop._tcp":            "volume-up.png",
+		"_spotify-connect._tcp": "spotify.png",
+	}
+	iconSize = imgui.NewVec2(24, 24)
+
 	lastFrame time.Time
 )
 
@@ -54,7 +71,13 @@ type Host struct {
 	IPv6Addr string
 
 	// Node graph stuff
-	Pos, Vel imgui.Vec2
+	Pos, Vel     imgui.Vec2
+	ServiceIcons []ServiceIcon
+}
+
+type ServiceIcon struct {
+	ServiceType string
+	Position    imgui.Vec2
 }
 
 type ServiceQuery struct {
@@ -114,7 +137,48 @@ func init() {
 			avahiServices = <-svcs
 		}
 	}()
+}
 
+func serviceQueriesForHost(host Host) []ServiceQuery {
+	var res []ServiceQuery
+	seen := make(map[string]struct{})
+	for _, query := range serviceQueries {
+		if query.SourceAddr != host.IPv4Addr && query.SourceAddr != host.IPv6Addr {
+			continue
+		}
+		if _, alreadySeen := seen[query.RawQuery]; alreadySeen {
+			continue
+		}
+
+		res = append(res, query)
+		seen[query.RawQuery] = struct{}{}
+	}
+	return res
+}
+
+func serviceInstancesForHost(host Host) []ServiceInstance {
+	var res []ServiceInstance
+	for _, instance := range serviceInstances {
+		if instance.Host == host.Name {
+			res = append(res, instance)
+		}
+	}
+	return res
+}
+
+func AfterCreateContext() {
+	macbook = loadTexture(macbookRaw)
+	lastFrame = time.Now()
+
+	for _, iconInfo := range utils.Must1(iconFS.ReadDir("icons")) {
+		iconData := utils.Must1(iconFS.ReadFile("icons/" + iconInfo.Name()))
+		icons[iconInfo.Name()] = loadTexture(iconData)
+	}
+
+	capturePackets()
+}
+
+func capturePackets() {
 	packets, err := packet.CaptureMDNS()
 	if err != nil {
 		panic(fmt.Errorf("Could not start packet capture: %v", err))
@@ -272,38 +336,6 @@ func init() {
 	}()
 }
 
-func serviceQueriesForHost(host Host) []ServiceQuery {
-	var res []ServiceQuery
-	seen := make(map[string]struct{})
-	for _, query := range serviceQueries {
-		if query.SourceAddr != host.IPv4Addr && query.SourceAddr != host.IPv6Addr {
-			continue
-		}
-		if _, alreadySeen := seen[query.RawQuery]; alreadySeen {
-			continue
-		}
-
-		res = append(res, query)
-		seen[query.RawQuery] = struct{}{}
-	}
-	return res
-}
-
-func serviceInstancesForHost(host Host) []ServiceInstance {
-	var res []ServiceInstance
-	for _, instance := range serviceInstances {
-		if instance.Host == host.Name {
-			res = append(res, instance)
-		}
-	}
-	return res
-}
-
-func AfterCreateContext() {
-	macbook = loadTexture(macbookRaw)
-	lastFrame = time.Now()
-}
-
 func UI() {
 	imgui.ShowDemoWindow()
 
@@ -417,11 +449,7 @@ func UI() {
 					imgui.Text("Requested services:")
 					imgui.Indent()
 					for _, query := range queries {
-						if niceName, ok := serviceTypes[query.ServiceType]; ok {
-							imgui.Text(fmt.Sprintf("%s (%s)", niceName[0].NiceName, query.ServiceType))
-						} else {
-							imgui.Text(query.ServiceType)
-						}
+						imgui.Text(niceNameForServiceType(query.ServiceType))
 					}
 					imgui.Unindent()
 				}
@@ -462,18 +490,9 @@ func UI() {
 			Add(imgui.NewVec2(imgui.WindowWidth()/2, imgui.WindowHeight()/2)).
 			Add(imgui.NewVec2(renderOffset[0], renderOffset[1]))
 
-		// Render graph lines
-		dl := imgui.WindowDrawList()
-		for _, edge := range edges {
-			dl.AddLine(
-				windowCenter.Add(edge.A.Pos).Add(macbookSize.Mul(0.5)),
-				windowCenter.Add(edge.B.Pos).Add(macbookSize.Mul(0.5)),
-				imgui.ColorU32Vec4(imgui.NewVec4(1, 1, 1, 1)),
-			)
-		}
-
 		// Render graph nodes
-		for _, host := range hosts {
+		for i := range hosts {
+			host := &hosts[i]
 			imgui.SetCursorScreenPos(windowCenter.Add(host.Pos))
 			imgui.BeginChildStr(host.Name)
 			{
@@ -485,8 +504,60 @@ func UI() {
 				if host.IPv6Addr != "" {
 					imgui.Text(host.IPv6Addr)
 				}
+
+				// Service icons!
+				host.ServiceIcons = nil
+				numAdditionalInstances := 0
+				for _, service := range serviceInstancesForHost(*host) {
+					if iconName, ok := service2iconname[service.ServiceType]; ok {
+						iconIdx := len(host.ServiceIcons)
+						if iconIdx%5 > 0 {
+							imgui.SameLine()
+						}
+
+						host.ServiceIcons = append(host.ServiceIcons, ServiceIcon{
+							ServiceType: service.ServiceType,
+							Position:    imgui.CursorScreenPos(),
+						})
+						imgui.Image(icons[iconName].ID, iconSize)
+						imgui.SetItemTooltip(niceNameForServiceType(service.ServiceType))
+					} else {
+						numAdditionalInstances += 1
+					}
+				}
+				if numAdditionalInstances > 0 {
+					imgui.Text(fmt.Sprintf("+%d", numAdditionalInstances))
+				}
 			}
 			imgui.EndChild()
+		}
+
+		// Render graph lines
+		dl := imgui.WindowDrawList()
+		lineColor := imgui.ColorU32Vec4(imgui.NewVec4(0.6, 0.6, 0.6, 1))
+		for _, edge := range edges {
+			didDrawDirectlyToOtherDevice := false
+			for _, thisQuery := range serviceQueriesForHost(*edge.A) {
+				didDrawToIcon := false
+				for _, otherIcon := range edge.B.ServiceIcons {
+					if thisQuery.ServiceType == otherIcon.ServiceType {
+						dl.AddLine(
+							windowCenter.Add(edge.A.Pos).Add(macbookSize.Mul(0.5)),
+							otherIcon.Position.Add(iconSize.Mul(0.5)),
+							lineColor,
+						)
+						didDrawToIcon = true
+					}
+				}
+				if !didDrawToIcon && !didDrawDirectlyToOtherDevice {
+					dl.AddLine(
+						windowCenter.Add(edge.A.Pos).Add(macbookSize.Mul(0.5)),
+						windowCenter.Add(edge.B.Pos).Add(macbookSize.Mul(0.5)),
+						lineColor,
+					)
+					didDrawDirectlyToOtherDevice = true
+				}
+			}
 		}
 	}
 	imgui.End()
@@ -551,8 +622,7 @@ func updateGraph(dt float32) {
 				}
 			}
 
-			alreadyConnected := hostsConnected(a, b)
-			if connected && !alreadyConnected {
+			if connected {
 				edges = append(edges, GraphEdge{A: a, B: b})
 			}
 		}
@@ -613,5 +683,13 @@ func updateGraph(dt float32) {
 
 		host.Pos.X += host.Vel.X * dt
 		host.Pos.Y += host.Vel.Y * dt
+	}
+}
+
+func niceNameForServiceType(serviceType string) string {
+	if niceName, ok := serviceTypes[serviceType]; ok {
+		return fmt.Sprintf("%s (%s)", niceName[0].NiceName, serviceType)
+	} else {
+		return serviceType
 	}
 }
